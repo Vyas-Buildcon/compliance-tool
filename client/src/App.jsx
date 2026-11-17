@@ -61,7 +61,7 @@ export default function App() {
         <div className={'mobile-overlay' + (mobileNavOpen ? ' show' : '')} onClick={() => setMobileNavOpen(false)} aria-hidden="true" />
         <aside className={'sidebar' + (mobileNavOpen ? ' open' : '')}>
           <div className="brand">
-            <img className="logo" src="images/nyati%20logo.avif" alt="Nyati" />
+            <img className="logo" src="images/vyas-logo.png" alt="Rajesh Vyas Group" />
             <span>Compliance Tracker</span>
             <button className="mobile-nav-close" type="button" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}>✕</button>
           </div>

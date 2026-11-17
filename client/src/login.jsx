@@ -22,7 +22,7 @@ function Login() {
 
   return (
     <form className="card" onSubmit={submit}>
-      <div className="brand"><img src="images/nyati%20logo.avif" alt="Nyati" />Compliance Tracker</div>
+      <div className="brand"><img src="images/vyas-logo.png" alt="Rajesh Vyas Group" />Compliance Tracker</div>
       <div className="subtitle">Sign in to access real estate compliance &amp; regulatory intelligence</div>
       <label htmlFor="email">Email</label>
       <input id="email" type="email" autoComplete="username" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />

@@ -1,1 +1,4 @@
-{ "version": "0.0.1", "configurations": [ { "name": "demo", "runtimeExecutable": "node", "runtimeArgs": ["C:/Users/thora/AppData/Local/Temp/claude/C--Users-thora--claude-spares-spare-r0no1O/df5171c2-edc1-4fba-9976-849f43f59a72/scratchpad/demo-server.mjs"], "port": 8003 } ] }
+{ "version": "0.0.1", "configurations": [
+  { "name": "demo", "runtimeExecutable": "node", "runtimeArgs": ["C:/Users/thora/AppData/Local/Temp/claude/C--Users-thora--claude-spares-spare-r0no1O/df5171c2-edc1-4fba-9976-849f43f59a72/scratchpad/demo-server.mjs"], "port": 8003 },
+  { "name": "vyas", "runtimeExecutable": "node", "runtimeArgs": ["server/server.js"], "env": { "MONGODB_DB": "vyas", "PORT": "8005" }, "port": 8005 }
+] }

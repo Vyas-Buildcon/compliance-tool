@@ -26,7 +26,7 @@ const APPLY = process.argv.includes('--apply');
 const DB_NAME = process.env.MONGODB_DB || 'compliance_tracker';
 
 /* ----------------------------- the demo world ----------------------------- */
-const COMPANY = { _id: 'co_demo', name: 'Nyati Demo Developers', employee_count: 140,
+const COMPANY = { _id: 'co_demo', name: process.env.DEMO_COMPANY || 'Vyas Demo Developers', employee_count: 140,
   facts: { owns_vehicles: true, intl_travel: false, workers_500plus: false, child_data: false, processes_spdi: true, discloses_spdi: false, govt_requests_spdi: false, transfers_spdi: false,
     covered_epf: true, covered_esi: true, covered_lwf: true, tax_audit: true, gstr9_threshold: true, msme_vendors: true, audit_committee: false, nrc: false, secretarial_audit: true, csr: true, sbo: false,
     fdi_construction: false, epc_abroad: false, has_exports: false, export_advances: false } };

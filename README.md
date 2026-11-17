@@ -1,4 +1,4 @@
-# Compliance Tracker & Calendar — Nyati
+# Compliance Tracker & Calendar — Rajesh Vyas Group
 
 A React app (built with Vite, in `client/`) and a plain Node server (`server/`, on `node:http`
 with a small router in `server/http.mjs` — no Express) that stores all tracking data in MongoDB

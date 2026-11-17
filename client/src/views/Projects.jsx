@@ -71,7 +71,7 @@ export default function Projects() {
           <div className="field"><label>What kind of project is it?</label>
             <Seg value={np.cat} onChange={(v) => setNp({ ...np, cat: v })} options={[['real_estate', 'Real estate'], ['epc', 'EPC (contract works)']]} /></div>
           <div className="setup-grid">
-            <div className="field"><label>Project name</label><input autoFocus placeholder="e.g. Nyati Evoque" value={np.name} onChange={set('name')} /></div>
+            <div className="field"><label>Project name</label><input autoFocus placeholder="e.g. Vyas Skyline" value={np.name} onChange={set('name')} /></div>
             <div className="field"><label>Location (city, state)</label><input placeholder="e.g. Pune, Maharashtra" value={np.location} onChange={set('location')} /></div>
             {re && <div className="field"><label>MahaRERA registration no.</label><input placeholder="P5XXXX000XXXX" value={np.rera} onChange={set('rera')} /></div>}
             {re && <div className="field"><label>Project type</label><select value={np.type} onChange={set('type')}><option value="">Choose later</option>{PROJECT_TYPES.map((x) => <option key={x}>{x}</option>)}</select></div>}
