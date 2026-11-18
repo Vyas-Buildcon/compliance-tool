@@ -171,8 +171,7 @@ function addPages(pages, name) {
   return { pages: pages.length, chunks: n };
 }
 
-async function loadTextFile(file, name) {
-  const txt = fs.readFileSync(file, 'utf8');
+function addText(txt, name) {
   let n = 0;
   for (const part of splitPage(txt)) { addChunk({ kind: 'doc', source: name, page: null, label: name, text: part }); n++; }
   return { pages: 1, chunks: n };
@@ -183,6 +182,80 @@ async function loadTextFile(file, name) {
  * `getAi` (optional) returns the AI config used to OCR scanned PDFs. OCR results are cached in knowledge/.ocr-cache/ (by file hash),
  * so each scan is read once. Identical copies of a file (same bytes) are indexed once. `knowledge.files` records the outcome per file.
  */
+// Text already pulled out of the knowledge files (see server/build-knowledge.mjs). Parsing the PDFs takes minutes of CPU
+// (the UDCPR alone is 41 MB), which on Vercel blocked every request on a cold start, so the server reads this instead.
+export const KNOWLEDGE_INDEX = 'knowledge-index.json';
+const INDEX_VERSION = 1;
+const knowledgeFiles = (dir) => fs.readdirSync(dir).filter((f) => /\.(pdf|txt|md)$/i.test(f) && !/^readme\./i.test(f)).sort();
+
+/** Reads one knowledge file into page texts. `rec` gets the outcome (status, OCR notes). Returns null for a duplicate. */
+async function extractFile(knowledgeDir, f, getAi, byHash, rec) {
+  const buf = fs.readFileSync(path.join(knowledgeDir, f)), hash = crypto.createHash('sha256').update(buf).digest('hex');
+  rec.hash = hash;
+  if (byHash.has(hash)) { Object.assign(rec, { status: 'duplicate', note: `Same file as "${byHash.get(hash)}" (already indexed)` }); return null; }
+  byHash.set(hash, f);
+  if (!/\.pdf$/i.test(f)) return { text: buf.toString('utf8') };
+  const pages = await readPdfPages(buf), bad = pagesToOcr(pages);
+  if (!bad.length) return { pages };
+  rec.ocr = true; rec.ocr_pages = bad.length;
+  const done = await ocrPages(getAi(), buf, bad, path.join(knowledgeDir, '.ocr-cache', `${hash}.json`), rec);
+  const missing = [];
+  // OCR text replaces the unreadable pages; a page OCR could not read is left empty rather than indexed as garbage.
+  const merged = pages.map((t, i) => (bad.includes(i) ? (done[i + 1] || (missing.push(i + 1), '')) : t));
+  const tr = Object.values(done).some((t) => t.includes('ENGLISH TRANSLATION:'));
+  rec.note = `${bad.length} of ${pages.length} pages unreadable as text (scanned or garbled Marathi/Hindi font): read with OCR${tr ? ' + English translation' : ''}` + (missing.length ? `; ${missing.length} page(s) not read yet (${rec.note || 'retry on next start'})` : '');
+  if (missing.length) { rec.partial = true; rec.missing = missing; }
+  return { pages: merged };
+}
+
+function readIndex(knowledgeDir) {
+  try {
+    const ix = JSON.parse(fs.readFileSync(path.join(knowledgeDir, KNOWLEDGE_INDEX), 'utf8'));
+    return ix && ix.version === INDEX_VERSION && Array.isArray(ix.files) ? ix : null;
+  } catch { return null; }
+}
+
+/**
+ * Builds (or refreshes) the knowledge index file: page text for every knowledge file, keyed by file hash so only
+ * changed files are parsed again. Used by `npm run build` and by a normal server start when the index is stale.
+ */
+export async function buildKnowledgeIndex(knowledgeDir, getAi = () => null, log = console.log) {
+  // Only entries that hold text are reusable (a "duplicate" entry shares its original's hash but has none).
+  const old = new Map((readIndex(knowledgeDir)?.files || []).filter((e) => e.pages || e.text).map((e) => [e.hash, e]));
+  const byHash = new Map(), files = [];
+  let parsed = 0;
+  for (const f of knowledgeFiles(knowledgeDir)) {
+    const rec = { file: f, status: 'failed', pages: 0, chunks: 0, ocr: false, note: '' };
+    const buf = fs.readFileSync(path.join(knowledgeDir, f)), hash = crypto.createHash('sha256').update(buf).digest('hex');
+    const prev = old.get(hash);
+    // A file already in the index (same bytes) is reused, unless it still had OCR pages to read and an AI key is now set.
+    if (prev && !byHash.has(hash) && !(prev.rec.partial && getAi())) {
+      byHash.set(hash, f);
+      files.push({ ...prev, rec: { ...prev.rec, file: f } });
+      continue;
+    }
+    try {
+      const out = await extractFile(knowledgeDir, f, getAi, byHash, rec);
+      if (out) { rec.status = rec.partial ? 'partial' : 'indexed'; parsed++; log(`Knowledge index: read "${f}"${rec.ocr ? ' (OCR)' : ''}.`); }
+      files.push({ hash, rec, ...(out || {}) });
+    } catch (e) { rec.note = e.message; files.push({ hash, rec }); log(`Knowledge index: could not read "${f}": ${e.message}`); }
+  }
+  const ix = { version: INDEX_VERSION, files };
+  if (parsed || files.length !== old.size) {
+    try { fs.writeFileSync(path.join(knowledgeDir, KNOWLEDGE_INDEX), JSON.stringify(ix)); }
+    catch (e) { log(`Knowledge index: could not save (${e.message}); it is still used this time.`); }
+  }
+  return ix;
+}
+
+/** True when the index matches the knowledge files on disk (same names and sizes; cheap, no hashing). */
+function indexIsCurrent(ix, knowledgeDir) {
+  const names = knowledgeFiles(knowledgeDir);
+  if (!names.length) return true;   // only the index was deployed (Vercel ships the index, not the PDFs)
+  const inIx = new Set(ix.files.map((e) => e.rec.file));
+  return names.length === inIx.size && names.every((n) => inIx.has(n));
+}
+
 export function initKnowledge(appDir, knowledgeDir, getAi = () => null) {
   loadItems(appDir);
   finishIndex();
@@ -190,40 +263,25 @@ export function initKnowledge(appDir, knowledgeDir, getAi = () => null) {
   console.log(`Ask AI: indexed ${knowledge.items.length} register items.`);
   return (async () => {
     if (!fs.existsSync(knowledgeDir)) { console.warn(`Ask AI: no knowledge folder at ${knowledgeDir}; answering from the register only.`); return; }
-    const files = fs.readdirSync(knowledgeDir).filter((f) => /\.(pdf|txt|md)$/i.test(f) && !/^readme\./i.test(f));
-    if (!files.length) { console.warn('Ask AI: knowledge folder has no PDF/TXT files; add the UDCPR and RERA PDFs and restart.'); return; }
-    const cacheDir = path.join(knowledgeDir, '.ocr-cache'), byHash = new Map();
+    let ix = readIndex(knowledgeDir);
+    if (!ix || !indexIsCurrent(ix, knowledgeDir)) {
+      if (process.env.VERCEL) { console.warn('Ask AI: knowledge index missing or out of date; run "npm run build:knowledge" and redeploy. Answering from the register only.'); if (!ix) return; }
+      else ix = await buildKnowledgeIndex(knowledgeDir, getAi);
+    }
+    if (!ix.files.length) { console.warn('Ask AI: knowledge folder has no PDF/TXT files; add the UDCPR and RERA PDFs and restart.'); return; }
     knowledge.files = [];
-    for (const f of files) {
-      const name = f.replace(/\.[^.]+$/, ''), rec = { file: f, status: 'failed', pages: 0, chunks: 0, ocr: false, note: '' };
+    for (const e of ix.files) {
+      const rec = { ...e.rec }, name = rec.file.replace(/\.[^.]+$/, '');
+      delete rec.hash;
       knowledge.files.push(rec);
-      try {
-        const buf = fs.readFileSync(path.join(knowledgeDir, f)), hash = crypto.createHash('sha256').update(buf).digest('hex');
-        if (byHash.has(hash)) { Object.assign(rec, { status: 'duplicate', note: `Same file as "${byHash.get(hash)}" (already indexed)` }); continue; }
-        byHash.set(hash, f);
-        let r;
-        if (!/\.pdf$/i.test(f)) r = await loadTextFile(path.join(knowledgeDir, f), name);
-        else {
-          const pages = await readPdfPages(buf), bad = pagesToOcr(pages);
-          if (!bad.length) r = addPages(pages, name);
-          else {
-            rec.ocr = true; rec.ocr_pages = bad.length;
-            const done = await ocrPages(getAi(), buf, bad, path.join(cacheDir, `${hash}.json`), rec);
-            const missing = [];
-            // OCR text replaces the unreadable pages; a page OCR could not read is left empty rather than indexed as garbage.
-            const merged = pages.map((t, i) => (bad.includes(i) ? (done[i + 1] || (missing.push(i + 1), '')) : t));
-            r = addPages(merged, name);
-            const tr = Object.values(done).some((t) => t.includes('ENGLISH TRANSLATION:'));
-            rec.note = `${bad.length} of ${pages.length} pages unreadable as text (scanned or garbled Marathi/Hindi font): read with OCR${tr ? ' + English translation' : ''}` + (missing.length ? `; ${missing.length} page(s) not read yet (${rec.note || 'retry on next start'})` : '');
-            if (missing.length) { rec.partial = true; rec.missing = missing; }
-          }
-        }
-        Object.assign(rec, { status: rec.partial ? 'partial' : 'indexed', pages: r.pages, chunks: r.chunks });
-        knowledge.docs.push({ name, ...r });
-        console.log(`Ask AI: indexed "${f}" (${r.pages} pages, ${r.chunks} chunks${rec.ocr ? ', OCR' : ''}).`);
-      } catch (e) { rec.note = e.message; console.error(`Ask AI: could not read "${f}":`, e.message); }
+      if (rec.status !== 'indexed' && rec.status !== 'partial') continue;
+      const r = e.pages ? addPages(e.pages, name) : addText(e.text || '', name);
+      Object.assign(rec, { pages: r.pages, chunks: r.chunks });
+      knowledge.docs.push({ name, ...r });
+      await new Promise((ok) => setImmediate(ok));   // let waiting requests through between files
     }
     finishIndex();
+    console.log(`Ask AI: loaded ${knowledge.docs.length} knowledge documents (${knowledge.chunks.length} chunks).`);
   })();
 }
 

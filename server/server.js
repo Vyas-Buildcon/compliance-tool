@@ -68,17 +68,22 @@ const SESSION_MS = 12 * 60 * 60 * 1000;
 const MIN_PASSWORD = 10;
 
 /* ----------------------------- database ----------------------------- */
-const client = new MongoClient(MONGODB_URI);
+// Fail in seconds (with a clear error) rather than hang until the function times out when the database is unreachable.
+const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 10_000, maxIdleTimeMS: 60_000 });
 try { await client.connect(); }
 catch (e) { console.error('MongoDB connection failed:', e.message); fatal('Could not connect to MongoDB. Check MONGODB_URI, and that Atlas Network Access allows this host (Vercel has no fixed IP: allow 0.0.0.0/0).'); }
 const db = client.db(MONGODB_DB);
 const users = db.collection('users');
-await db.collection('audit').createIndex({ key: 1, at: -1 });
-await db.collection('documents').createIndex({ key: 1, uploaded_at: -1 });
-await db.collection('notifications').createIndex({ at: -1 });
-await db.collection('ai_recommendations').createIndex({ scope_id: 1, status: 1 });
-await db.collection('health_snapshots').createIndex({ scope_id: 1, date: -1 });
-await db.collection('ai_analyses').createIndex({ project_id: 1, analysed_at: -1 });
+// One round trip each to the database; sent together, and not awaited, so a cold start does not wait for them.
+Promise.all([
+  db.collection('audit').createIndex({ key: 1, at: -1 }),
+  db.collection('documents').createIndex({ key: 1, uploaded_at: -1 }),
+  db.collection('notifications').createIndex({ at: -1 }),
+  db.collection('ai_recommendations').createIndex({ scope_id: 1, status: 1 }),
+  db.collection('health_snapshots').createIndex({ scope_id: 1, date: -1 }),
+  db.collection('ai_analyses').createIndex({ project_id: 1, analysed_at: -1 }),
+  db.collection('chat_logs').createIndex({ at: -1 })
+]).catch((e) => console.error('Index creation failed:', e.message));
 const bucket = new GridFSBucket(db, { bucketName: 'uploads' });
 console.log(`Connected to MongoDB database "${MONGODB_DB}"`);
 
@@ -339,7 +344,6 @@ app.put('/auth/users/:email', requireCap('manage_users'), async (req, res) => {
 /* ----------------------------- Ask AI chatbot ----------------------------- */
 const chatPrompt = fs.readFileSync(path.join(here, 'chat-prompt.txt'), 'utf8');
 const chatLogs = db.collection('chat_logs');
-await chatLogs.createIndex({ at: -1 });
 initKnowledge(sharedDir, knowledgeDir, () => aiConfig()).catch((e) => console.error('Ask AI knowledge load failed:', e));
 
 const chatLimiter = rateLimit({
@@ -942,6 +946,8 @@ cronDailyDeps.run = async () => {
     if (!r.skipped) console.log(`Regulatory monitoring finished: ${r.run.totals.new} new, ${r.run.totals.modified} changed, ${r.run.totals.failed} source problem(s)${r.run.partial ? ' (time limit reached; the rest follows next run)' : ''}.`);
   }
   await runReminderCheck();
+  // On serverless this used to run on every cold start, scanning every document before the first request was answered.
+  if (process.env.VERCEL) await runCarryForward();
 };
 
 /* ----------------------------- app shell and register data (signed-in only) ----------------------------- */
@@ -956,10 +962,8 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.status && err.status < 500 ? err.message : 'server error' });
 });
 
-if (process.env.VERCEL) {
-  // Serverless: no persistent process to run deferred/interval work, so do the one-time setup now.
-  await runCarryForward();
-} else {
+// Serverless (Vercel): no long-lived process, so the daily cron does the deferred work (see cronDailyDeps.run).
+if (!process.env.VERCEL) {
   const server = app.listen(PORT, () => console.log(`Compliance Tracker running on port ${PORT}${PROD ? ' (production)' : ''}`));
 
   setTimeout(runReminderCheck, 20_000).unref();
