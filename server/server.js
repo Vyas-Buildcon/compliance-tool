@@ -69,9 +69,19 @@ const MIN_PASSWORD = 10;
 
 /* ----------------------------- database ----------------------------- */
 // Fail in seconds (with a clear error) rather than hang until the function times out when the database is unreachable.
-const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 10_000, maxIdleTimeMS: 60_000 });
+// On serverless each instance keeps its own small pool: many instances x the default 100 connections can exceed the
+// database host's connection limit, which then refuses new connections (seen as "tlsv1 alert internal error").
+const client = new MongoClient(MONGODB_URI, {
+  serverSelectionTimeoutMS: 10_000, maxIdleTimeMS: 60_000,
+  ...(process.env.VERCEL ? { maxPoolSize: 5, minPoolSize: 0 } : {})
+});
 try { await client.connect(); }
-catch (e) { console.error('MongoDB connection failed:', e.message); fatal('Could not connect to MongoDB. Check MONGODB_URI, and that Atlas Network Access allows this host (Vercel has no fixed IP: allow 0.0.0.0/0).'); }
+catch (e) {
+  console.error('MongoDB connection failed:', e.message);
+  // On Vercel a failed start-up used to leave the instance answering 500 to every request until it was recycled.
+  // The driver reconnects by itself on the next query, so start anyway and let each request retry the connection.
+  if (!process.env.VERCEL) fatal('Could not connect to MongoDB. Check MONGODB_URI, and that Atlas Network Access allows this host (Vercel has no fixed IP: allow 0.0.0.0/0).');
+}
 const db = client.db(MONGODB_DB);
 const users = db.collection('users');
 // One round trip each to the database; sent together, and not awaited, so a cold start does not wait for them.
@@ -123,7 +133,9 @@ function readToken(token) {
 const cookieOpts = { httpOnly: true, sameSite: 'strict', secure: PROD, maxAge: SESSION_MS, path: '/' };
 
 /* First run: create the admin from ADMIN_EMAIL / ADMIN_PASSWORD when there are no users. */
-if ((await users.countDocuments()) === 0) {
+// Not awaited: a database hiccup here must not stop the server from starting.
+(async () => {
+  if ((await users.countDocuments()) !== 0) return;
   if (ADMIN_EMAIL && ADMIN_PASSWORD && ADMIN_PASSWORD.length >= MIN_PASSWORD) {
     await users.insertOne({
       _id: ADMIN_EMAIL.trim().toLowerCase(), name: 'Administrator', role: 'admin', active: true,
@@ -133,7 +145,7 @@ if ((await users.countDocuments()) === 0) {
   } else {
     console.warn(`No users exist. Set ADMIN_EMAIL and ADMIN_PASSWORD (min ${MIN_PASSWORD} chars) and restart to create the first admin.`);
   }
-}
+})().catch((e) => console.error('First-admin check failed:', e.message));
 
 /* ----------------------------- helpers ----------------------------- */
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);

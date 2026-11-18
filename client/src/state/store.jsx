@@ -26,6 +26,7 @@ const COLLECTIONS = {
     return m;
   }]
 };
+const REFRESH_MS = 60_000;
 const EMPTY = Object.fromEntries(Object.values(COLLECTIONS).map(([field]) => [field, {}]));
 const VIEWS = ['dashboard', 'stages', 'calendar', 'register', 'documents', 'vault', 'regulatory', 'projects', 'dq', 'users', 'settings'];
 
@@ -61,10 +62,17 @@ export function StoreProvider({ me, roles, capLabels, statics, children }) {
     if (Object.keys(patch).length) setCols((prev) => ({ ...prev, ...patch }));
   }, []);
 
+  // Background refresh, to pick up other people's changes (your own changes reload at once, see save/saveDoc below).
+  // Every refresh re-reads all collections from the database, so it is kept slow and paused while the tab is hidden:
+  // at 5 seconds, one open tab read ~2 GB an hour and the database host started throttling and refusing connections.
   useEffect(() => {
+    let last = Date.now();
+    const refresh = () => { last = Date.now(); return reload(); };
     reload().then(() => setLoaded(true));
-    const t = setInterval(() => reload(), 5000);
-    return () => clearInterval(t);
+    const t = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+    const onShow = () => { if (!document.hidden && Date.now() - last > 15_000) refresh(); };
+    document.addEventListener('visibilitychange', onShow);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onShow); };
   }, [reload]);
 
   const D = useMemo(() => ({ ...statics, ...cols }), [statics, cols]);
